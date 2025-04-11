@@ -1,242 +1,145 @@
-% Simple Care Home Robot Navigation with A* and Obstacle Avoidance
+%% Wheeled Medical Robot Simulation in a Care Home Environment
 clc; clear; close all;
 
-%% 1. Setup Environment
-grid_size = 20; % 20x20m environment
-resolution = 1; % 1 cell/meter
-map = binaryOccupancyMap(grid_size, grid_size, resolution);
-inflate(map, 0.5); % Inflate obstacles for safety
+%% ==================== 1. Mechanical Design ====================
+robot.radius = 0.4; % Radius of the robot (meters)
+robot.max_speed = 1.5; % Maximum speed (m/s)
+disp('=== Mechanical Design ===');
+disp(['Robot Radius: ' num2str(robot.radius) ' m']);
+disp(['Max Speed: ' num2str(robot.max_speed) ' m/s']);
 
-% Add static obstacles (walls, furniture)
-obstacles = [
-    2 2; 3 2; 4 2; 5 2; 6 2; 7 2;
-    5 3; 5 4; 5 5; 5 6;
-    8 8; 8 7; 8 6;
-    3 8; 4 8; 3 9; 4 9;
-    15 15; 15 16; 16 15; 16 16;
-    10 5; 11 5; 12 5; 13 5;
+%% ==================== 2. Environment Setup ====================
+map = binaryOccupancyMap(100, 100, 1); % 100x100 grid, 1m resolution
+inflate(map, 1); % Inflate obstacles for safety
+
+% Define care home layout (walls, furniture, beds, etc.)
+walls = [
+    10 10; 10 90; 90 90; 90 10; % Outer boundary
+    30 30; 30 70; 70 70; 70 30; % Room 1
+    30 120; 30 160; 70 160; 70 120; % Room 2
 ];
-setOccupancy(map, obstacles, 1);
 
-%% 2. Set Start and Goal Positions
-start_pos = [2, 3];
-goal_pos = [18, 17];
+furniture = [
+    % Beds and tables in Room 1
+    40 40; 50 40; 60 40;
+    40 50; 50 50; 60 50;
+    % Chairs in Room 2
+    130 40; 140 40; 150 40;
+];
 
-if checkOccupancy(map, start_pos) || checkOccupancy(map, goal_pos)
-    error('Start or goal position inside obstacle!');
+% Combine walls and furniture into obstacles
+all_obstacles = [walls; furniture];
+setOccupancy(map, all_obstacles, 1);
+
+%% ==================== 3. Visualization ====================
+fig1 = figure('Name', 'Robot Navigation', 'Position', [100 100 800 700]);
+ax1 = axes(fig1);
+show(map, 'Parent', ax1);
+hold(ax1, 'on');
+grid(ax1, 'on');
+ax1.GridAlpha = 0.3;
+
+% Initialize start and goal markers (will be updated later)
+startPlot = plot(ax1, 0, 0, 'go', 'MarkerSize', 10, 'LineWidth', 2, 'Visible', 'off');
+goalPlot = plot(ax1, 0, 0, 'ro', 'MarkerSize', 10, 'LineWidth', 2, 'Visible', 'off');
+title(ax1, 'Wheeled Medical Robot Navigation');
+xlabel(ax1, 'X Coordinate (meters)');
+ylabel(ax1, 'Y Coordinate (meters)');
+
+%% ==================== 4. Path Planning ====================
+ss = stateSpaceSE2([map.XWorldLimits; map.YWorldLimits; [-pi pi]]);
+sv = validatorOccupancyMap(ss);
+sv.Map = map;
+sv.ValidationDistance = 1;
+
+planner = plannerRRTStar(ss, sv);
+planner.MaxIterations = 3000;
+planner.MaxConnectionDistance = 10; % Adjusted for indoor navigation
+planner.GoalBias = 0.3;
+
+%% ==================== 5. Generate Valid Random Start/Goal Positions ====================
+% Generate random start and goal positions
+start_pos = findFreePosition(map);
+goal_pos = findFreePosition(map);
+
+% Ensure minimum separation between start and goal
+while norm(start_pos - goal_pos) < 30 % Minimum distance of 30 meters
+    goal_pos = findFreePosition(map);
 end
 
-%% 3. Path Planning (A*)
-planner = plannerAStarGrid(map);
+% Update the start and goal markers with actual positions
+set(startPlot, 'XData', start_pos(1), 'YData', start_pos(2), 'Visible', 'on');
+set(goalPlot, 'XData', goal_pos(1), 'YData', goal_pos(2), 'Visible', 'on');
 
-% Convert world -> grid for planning
-start_grid = world2grid(map, start_pos);
-goal_grid = world2grid(map, goal_pos);
+%% ==================== 6. Plan Path ====================
+start = [start_pos, 0]; % Start with orientation
+goal = [goal_pos, 0]; % Goal with orientation
+[pthObj, solnInfo] = plan(planner, start, goal);
 
-path = plan(planner, start_grid, goal_grid);
-path = grid2world(map, path);
+if ~solnInfo.IsPathFound
+    path = [linspace(start(1), goal(1), 100)', linspace(start(2), goal(2), 100)', zeros(100, 1)];
+    warning('Using straight-line fallback path');
+else
+    path = pthObj.States;
+end
 
-%% 4. Visualization Setup
-fig = figure('Name', 'Simple Navigation with Obstacle Avoidance');
-ax = axes('Parent', fig);
-show(map, 'Parent', ax); 
-hold(ax, 'on');
+% Plot planned path
+pathPlot = plot(ax1, path(:, 1), path(:, 2), 'g-', 'LineWidth', 2);
 
-% Initialize all plot handles
-h_start = plot(ax, start_pos(1), start_pos(2), 'go', 'MarkerSize', 10, 'LineWidth', 2);
-h_goal = plot(ax, goal_pos(1), goal_pos(2), 'ro', 'MarkerSize', 10, 'LineWidth', 2);
-h_path = plot(ax, path(:,1), path(:,2), 'b-', 'LineWidth', 2);
-h_robot = plot(ax, start_pos(1), start_pos(2), 'kx', 'MarkerSize', 10, 'LineWidth', 2);
-h_traj = plot(ax, start_pos(1), start_pos(2), 'm-', 'LineWidth', 1.5);
-legend([h_start, h_goal, h_path, h_robot, h_traj], ...
-    {'Start','Goal','Global Path','Robot','Trajectory'});
+%% ==================== 7. Robot Simulation ====================
+currentPos = start_pos;
+traveledPath = currentPos;
 
-%% 5. Navigation Loop with Obstacle Avoidance
-robotPose = [start_pos, 0]; % [x, y, theta]
-trajectory = robotPose(1:2);
-safe_distance = 0.8;
-max_attempts = 1000;
-attempt = 0;
-reached_goal = false;
+% Create detailed robot representation
+robotBody = rectangle(ax1, 'Position', [currentPos(1)-robot.radius, currentPos(2)-robot.radius, 2*robot.radius, 2*robot.radius], ...
+    'Curvature', [1, 1], 'FaceColor', 'b', 'EdgeColor', 'k', 'LineWidth', 2);
 
-% Variables for stuck detection
-last_position = start_pos; % Track the robot's last position
-stuck_threshold = 0.1;     % Distance threshold to detect being stuck
-stuck_count = 0;           % Counter for consecutive stuck iterations
-max_stuck_attempts = 10;   % Maximum allowed stuck iterations
+% Create traveled path plot
+travelPlot = plot(ax1, traveledPath(:, 1), traveledPath(:, 2), 'b-', 'LineWidth', 1.5);
 
-% Main navigation loop
-while attempt < max_attempts && ~reached_goal
-    attempt = attempt + 1;
-    
-    % Check if the robot is stuck
-    if norm(robotPose(1:2) - last_position) < stuck_threshold
-        stuck_count = stuck_count + 1;
-    else
-        stuck_count = 0; % Reset stuck counter if the robot moves
-    end
-    
-    % Handle being stuck
-    if stuck_count > max_stuck_attempts
-        warning('Robot is stuck! Attempting to escape...');
-        % Randomly perturb the robot's position to break out of the local minimum
-        robotPose(1:2) = robotPose(1:2) + randn(1, 2) * 0.5; % Small random movement
-        stuck_count = 0; % Reset stuck counter
-    end
-    
-    % Update last position
-    last_position = robotPose(1:2);
-    
-    % Check for obstacles near the robot
-    [obstacle_detected, ~] = check_local_obstacles(map, robotPose, safe_distance);
-    
-    % If obstacle detected, replan path from current position
-    if obstacle_detected
-        start_grid = world2grid(map, robotPose(1:2));
-        new_path = plan(planner, start_grid, goal_grid);
+% Simulation parameters
+dt = 0.2; % Timestep
+animation_speed = 0.1; % Pause time for smoother animation
+
+% Interpolate path for smoother animation
+interp_factor = 10;
+xi = interp1(1:size(path, 1), path(:, 1), linspace(1, size(path, 1), size(path, 1)*interp_factor))';
+yi = interp1(1:size(path, 1), path(:, 2), linspace(1, size(path, 1), size(path, 1)*interp_factor))';
+interp_path = [xi yi];
+
+% Run simulation
+for i = 1:size(interp_path, 1)
+    try
+        % Update robot position
+        newPos = interp_path(i, :);
+        currentPos = newPos;
+        traveledPath = [traveledPath; currentPos];
         
-        if ~isempty(new_path)
-            path = grid2world(map, new_path);
-            % Update path plot
-            set(h_path, 'XData', path(:,1), 'YData', path(:,2));
-        else
-            warning('No valid path found!');
-            break;
-        end
-    end
-    
-    % Move toward the next point in the path
-    if size(path,1) > 1
-        target_pt = path(2,:); % Always go to next point in path
-        [v, omega] = simple_controller(robotPose, target_pt);
-        robotPose = update_pose(robotPose, v, omega, 0.1);
+        % Update robot visualization
+        set(robotBody, 'Position', [currentPos(1)-robot.radius, currentPos(2)-robot.radius, 2*robot.radius, 2*robot.radius]);
+        set(travelPlot, 'XData', traveledPath(:, 1), 'YData', traveledPath(:, 2));
         
-        % Remove passed points from path
-        if norm(robotPose(1:2) - path(1,:)) < 0.3
-            path(1,:) = [];
-        end
-    end
-    
-    % Update visualization
-    trajectory = [trajectory; robotPose(1:2)];
-    
-    % Update robot position
-    set(h_robot, 'XData', robotPose(1), 'YData', robotPose(2));
-    
-    % Update trajectory
-    set(h_traj, 'XData', trajectory(:,1), 'YData', trajectory(:,2));
-    
-    drawnow;
-    
-    % Check if goal reached
-    if norm(robotPose(1:2) - goal_pos) < 0.5
-        reached_goal = true;
-        disp('Goal reached successfully!');
-    end
-    
-    pause(0.05);
-    
-    % Check if figure is still open
-    if ~isvalid(fig)
-        disp('Figure closed by user - stopping navigation');
+        drawnow;
+        pause(animation_speed);
+    catch ME
+        warning('Error at step %d: %s', i, ME.message);
         break;
     end
 end
 
-if ~reached_goal && isvalid(fig)
-    disp('Navigation terminated - maximum attempts reached');
-end
+% Finalize plots
+legend(ax1, [startPlot, goalPlot, pathPlot, travelPlot], ...
+    {'Start', 'Goal', 'Planned Path', 'Traveled Path'}, ...
+    'Location', 'northeastoutside', 'FontSize', 8);
+title(ax1, 'Mission Complete');
 
-%% Helper Functions
-function [obstacle_detected, obstacle_pos] = check_local_obstacles(map, pose, safe_dist)
-    % Improved obstacle detection in front of the robot
-    robot_pos = pose(1:2);
-    theta = pose(3);
-    
-    % Check points in an arc in front of the robot
-    num_check_points = 7; % More points for better coverage
-    angles = linspace(-pi/3, pi/3, num_check_points); % Arc spanning -60° to +60°
-    check_dist = safe_dist * 1.5;
-    check_pts = [];
-    
-    for i = 1:num_check_points
-        check_pts = [check_pts; ...
-            robot_pos(1) + check_dist*cos(theta + angles(i)), ...
-            robot_pos(2) + check_dist*sin(theta + angles(i))];
-    end
-    
-    % Check occupancy
-    occ_values = checkOccupancy(map, check_pts);
-    
-    if any(occ_values > 0)
-        obstacle_detected = true;
-        obstacle_pos = check_pts(find(occ_values > 0, 1), :);
-    else
-        obstacle_detected = false;
-        obstacle_pos = [NaN, NaN];
-    end
-end
-
-function [v, omega] = simple_controller(pose, target)
-    % PID controller for improved performance
-    Kp_v = 0.5;  % Linear velocity gain
-    Ki_v = 0.01; % Integral gain for linear velocity
-    Kd_v = 0.1;  % Derivative gain for linear velocity
-    
-    Kp_w = 1.0;  % Angular velocity gain
-    Ki_w = 0.02; % Integral gain for angular velocity
-    Kd_w = 0.2;  % Derivative gain for angular velocity
-    
-    persistent prev_dx prev_dy prev_angle_error integral_v integral_w
-    if isempty(prev_dx)
-        prev_dx = 0;
-        prev_dy = 0;
-        prev_angle_error = 0;
-        integral_v = 0;
-        integral_w = 0;
-    end
-    
-    % Calculate errors
-    dx = target(1) - pose(1);
-    dy = target(2) - pose(2);
-    distance_error = sqrt(dx^2 + dy^2);
-    angle_error = atan2(dy, dx) - pose(3);
-    angle_error = mod(angle_error + pi, 2*pi) - pi; % Normalize to [-pi, pi]
-    
-    % Update integrals
-    integral_v = integral_v + distance_error;
-    integral_w = integral_w + angle_error;
-    
-    % Calculate derivatives
-    deriv_v = distance_error - sqrt(prev_dx^2 + prev_dy^2);
-    deriv_w = angle_error - prev_angle_error;
-    
-    % Calculate control outputs
-    v = Kp_v * distance_error + Ki_v * integral_v + Kd_v * deriv_v;
-    omega = Kp_w * angle_error + Ki_w * integral_w + Kd_w * deriv_w;
-    
-    % Limit velocities
-    v = min(max(v, -0.5), 0.5);
-    omega = min(max(omega, -1.0), 1.0);
-    
-    % Update persistent variables
-    prev_dx = dx;
-    prev_dy = dy;
-    prev_angle_error = angle_error;
-end
-
-function new_pose = update_pose(pose, v, omega, dt)
-    % Simple pose update with differential drive kinematics
-    new_pose = pose;
-    if abs(omega) < 1e-6
-        % Straight line motion
-        new_pose(1) = pose(1) + v * cos(pose(3)) * dt;
-        new_pose(2) = pose(2) + v * sin(pose(3)) * dt;
-    else
-        % Circular motion
-        radius = v / omega;
-        new_pose(1) = pose(1) + radius * (sin(pose(3) + omega*dt) - sin(pose(3)));
-        new_pose(2) = pose(2) - radius * (cos(pose(3) + omega*dt) - cos(pose(3)));
-        new_pose(3) = pose(3) + omega * dt;
+%% ==================== Local Function Definitions ====================
+function pos = findFreePosition(map)
+    while true
+        pos = [randi([map.XWorldLimits(1)+5, map.XWorldLimits(2)-5]), ...
+               randi([map.YWorldLimits(1)+5, map.YWorldLimits(2)-5])];
+        if ~checkOccupancy(map, pos)
+            break;
+        end
     end
 end
